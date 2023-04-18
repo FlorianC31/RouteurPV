@@ -1,0 +1,11 @@
+﻿STM32/RTE
+STM32/.vs
+*.scvd
+STM32/routeur.uvguix.flori
+*.uvoptx
+*.uvprojx
+STM32/Objects
+STM32/Listings
+STM32/DebugConfig
+STM32/.vscode
+PI/build
