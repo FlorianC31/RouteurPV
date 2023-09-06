@@ -1,0 +1,46 @@
+{
+    "achat": {
+        "fournisseur": "engie",
+        "mode": "hp_hc",
+        "Fourniture": {
+            "2023-07-16": {
+                "hp_hc": {
+                    "abonnement": 23.67,
+                    "HP": 0.1816,
+                    "HC": 0.07336
+                },
+                "base": {
+                    "abonnement": 18.74,
+                    "prix": 0.15281
+                }
+            }
+        },
+        "Acheminement": {
+            "2023-07-16": {
+                "hp_hc": {
+                    "abonnement": 119.63,
+                    "haute_HP": 0.0696,
+                    "haute_HC": 0.04824,
+                    "basse_HP": 0.01584,
+                    "basse_HC": 0.00996
+                },
+                "base": {
+                    "abonnement": 112.22,
+                    "prix": 0.04728
+                }
+            }
+        },
+        "Obligations": {
+            "2023-07-16": {
+                "hp_hc": {
+                    "abonnement": 0,
+                    "prix": 0.0212
+                },
+                "base": {
+                    "abonnement": 0,
+                    "prix": 0.0159
+                }
+            }
+        }
+    }
+}
