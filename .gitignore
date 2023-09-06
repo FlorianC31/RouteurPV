@@ -9,3 +9,4 @@ STM32/Listings
 STM32/DebugConfig
 STM32/.vscode
 PI/build
+*/.vscode
