@@ -18,179 +18,198 @@ struct Measure
 
 // Variables declarations
 WiFiClient tcpClient;
+volatile unsigned short int transitionCount(0);
 
-volatile unsigned short int transitionCount = 0;
 unsigned short int flow;
+std::list<Measure> measuresQueue;
+std::mutex measuresListMutex;
+unsigned long int lastSentTimestamp(0);
+unsigned long int wifiConnectTimestamp(0);
+unsigned long previousMeasureTime (0);
 
-std::list<Measure> fifoOut;
-std::list<unsigned long int> fifoIn;
-std::mutex fifoOutMutex;
-std::mutex fifoInMutex;
+
+std::mutex logMutex;
+std::list<String> logList;
 
 
-
-// Functions prototypes
-void networkSetup();
-void counterSetup();
-void timerCallback(void *arg);
-void IRAM_ATTR counterCallback();
-void grabMeasure();
-bool sendMeasure(Measure *measure);
-String getMeasureStr(const Measure &measure);
+// Setup Functions prototypes
+void grabMeasureSetup();
+void measureQueueTimerSetup();
 void ntpSetup();
-void printLocalTime();
+
+// Callback Functions prototypes
 void ntpTimerCallback(void *arg);
-bool tcpConnect();
+void measureQueueCallback(void *arg);
+void grabMeasureCallback(void *arg);
+void IRAM_ATTR counterCallback();
+
+// Misc Functions prototypes
+bool sendMeasure(Measure *measure);
 unsigned long getTime();
-void tcpReceiptCallback();
-bool isTimestampSentBack(unsigned long int timestamp);
+void log(String function, String message);
+
+// Debug Functions prototypes
+String getLocalTimeStr();
+String getMeasureStr(const Measure &measure);
+size_t getListMemorySize();
+
+
+void measureQueueCallback(void *arg)
+{
+	// Check connection
+	if (WiFi.status() != WL_CONNECTED || !tcpClient.connected()) {
+		return;
+	}
+
+	// Check if there a new response receipted
+	if (tcpClient.available()) {
+		uint32_t receivedTimestamp;
+		tcpClient.readBytes((char *)&receivedTimestamp, sizeof(receivedTimestamp));
+		log("measureQueueCallback", "Response received: " + String(receivedTimestamp));
+
+		if (lastSentTimestamp == receivedTimestamp){
+
+		log("measureQueueCallback", "Remove measure of the queue:" + String(receivedTimestamp));
+			measuresListMutex.lock();
+			measuresQueue.pop_front();
+			measuresListMutex.unlock();
+			lastSentTimestamp = 0;
+		}
+	}
+		
+	// If there are some measures in the queue
+	if (!measuresQueue.empty()){
+
+		// If there is no measure waiting for response, send the first measure of the queue
+		if (lastSentTimestamp == 0) {		
+			measuresListMutex.lock();
+			Measure firstMeasure = measuresQueue.front();
+			measuresListMutex.unlock();
+
+			if(sendMeasure(&firstMeasure)){
+				lastSentTimestamp = firstMeasure.timestamp;
+				log("measureQueueCallback", "Send succesfully: " + String(lastSentTimestamp));
+			}
+			else{
+				log("measureQueueCallback", "Fail send: " + String(lastSentTimestamp));
+			}
+
+		}
+		// If the response is not receipted before "RESPONSE_TIMEOUT", stop waiting to try a new send on the next step of the timer
+		else if (getTime() - lastSentTimestamp >= RESPONSE_TIMEOUT) {
+			log("measureQueueCallback", "Send timeout: " + String(lastSentTimestamp));
+			lastSentTimestamp = 0;
+		}
+		// Else, wait for response or RESPONSE_TIMEOUT
+	}
+}
+
 
 // Functions definition
 void setup()
 {
+//#ifdef DEBUG
 	Serial.begin(BAUD_RATE);
-	networkSetup();
+//#endif
 
-	counterSetup();
+	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+	Serial.println("setup - WiFi.begin() OK");
+	measureQueueTimerSetup();
+	Serial.println("setup - measureQueueTimerSetup OK");
+	grabMeasureSetup();
+	Serial.println("setup - grabMeasureSetup() OK");
 	ntpSetup();
+	Serial.println("setup - ntpSetup() OK");
 
 	pinMode(TEMPERATURE_PIN, INPUT);
 
-	Serial.println("sizeof(Measure) = " + String(sizeof(Measure)));
-
+#ifdef DEBUG
+	Serial.println("setup - sizeof(Measure) = " + String(sizeof(Measure)));
+	logList.clear();
+#endif
 }
 
 void loop()
 {
-	fifoOutMutex.lock();
-	unsigned long int firstTimestamp = fifoOut.back().timestamp;
-	fifoOutMutex.unlock();
-
-	// if the FIFO is empty, wait another measure
-	if (fifoOut.empty())
-	{
-		delay(MEASURE_PERIOD * 1000);
-		return;
+#ifdef DEBUG
+	logMutex.lock();
+	while(!logList.empty()){	
+		Serial.println(logList.back());
+		logList.pop_back();
 	}
+	logMutex.unlock();
+#endif
 
-	// Try to send the last measure of the FIFO
-	if (!sendMeasure(&fifoOut.back()))
-	{
-		// If failed wait before retrying
-		Serial.println("Connection error");
-		delay(MEASURE_PERIOD * 1000);
-		return;
-	}
+	unsigned long currentMillis = millis();
+	if (currentMillis - previousMeasureTime >= NETWORK_PERIOD) {
 
-	// Wait until the timestamp is sent back by the server
-	unsigned int nbTries = 0;
-	while (!isTimestampSentBack(firstTimestamp) && nbTries < MAX_RX_TRIES) {		
-		delay(TCP_RECEIPT_PERIOD);
-		nbTries++;	
-	}
-	
-	// if after 10 tries of 100ms the paquet is still not received, exit the loop to send the first measure again
-	if (nbTries == MAX_RX_TRIES) {
-		return;
-	}
-
-	// else, remove the timestamp from the FIFO in 
-	fifoInMutex.lock();
-	fifoIn.remove(firstTimestamp);
-	fifoInMutex.unlock();
-
-	// and the first measure from the FIFO out
-	fifoOutMutex.lock();
-	Measure sentMeasure = fifoOut.back();
-	fifoOut.pop_back();
-	fifoOutMutex.unlock();
-	Serial.println("Paquet well sent: " + getMeasureStr(sentMeasure));
-
-}
-
-
-bool isTimestampSentBack(unsigned long int timestamp)
-{
-	auto it = std::find(fifoIn.begin(), fifoIn.end(), timestamp);
-	return it != fifoIn.end();
-}
-
-void networkSetup()
-{
-	// Connexion au réseau WiFi
-	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-	while (WiFi.status() != WL_CONNECTED)
-	{
-		delay(1000);
-		Serial.println("Connexion au WiFi...");
-	}
-	Serial.println("Connecté au WiFi");
-}
-
-bool tcpConnect()
-{
-	// Connexion au serveur TCP
-	if (tcpClient.connect(SERVER_IP, SERVER_PORT))
-	{
-		Serial.println("Connexion au serveur établie");
-
-		// Creation of the TCP receipt timer
-		esp_timer_create_args_t ntp_timer_conf = {
-			.callback = &ntpTimerCallback,
-		};
-		esp_timer_handle_t ntp_timer;
-		esp_timer_create(&ntp_timer_conf, &ntp_timer);
-		esp_timer_start_periodic(ntp_timer, TCP_RECEIPT_PERIOD * 1000);
-
-		return true;
-	}
-	else
-	{
-		Serial.println("Échec de la connexion au serveur");
-		return false;
-	}
-}
-
-void tcpReceiptCallback()
-{
-	if (tcpClient.available()) {
-		uint32_t receivedTimestamp;
-		tcpClient.readBytes((char *)&receivedTimestamp, sizeof(receivedTimestamp));
-		
-		// If the timestamp is not already in the FIFO add it
-		fifoInMutex.lock();
-		auto it = std::find(fifoIn.begin(), fifoIn.end(), receivedTimestamp);
-		if (it == fifoIn.end()) {
-			fifoIn.push_front(receivedTimestamp);
+		// If wifi and tcp are connected, return directly
+		if (WiFi.status() == WL_CONNECTED && tcpClient.connected()) {
+			return;
 		}
-		fifoInMutex.unlock();
+
+		// If wifi is disconnected
+		if (WiFi.status() != WL_CONNECTED) {
+			log("loop", "Wifi waiting for connection");
+
+			// and if last connection try duration is superior to WIFI_TIMEOUT, try to reconnect
+			unsigned long currentTime = getTime();
+			if ((currentTime == 0) || (currentTime - wifiConnectTimestamp >= WIFI_TIMEOUT)) {
+				log("loop", "Connection to WiFi");
+				log("loop", "currentTime = " + String(currentTime));
+				WiFi.disconnect();
+				WiFi.reconnect();
+				wifiConnectTimestamp = getTime();
+
+				if (currentTime == 0) {
+					while((WiFi.status() != WL_CONNECTED)) {
+						log("loop", "Wifi waiting for connection");
+						delay(1000);
+					}
+				}
+			}
+			return;
+		}
+
+		// If tcp is disconnected, connect it
+		if (!tcpClient.connected()) {
+			log("loop", "Connection to TCP server");
+			tcpClient.connect(SERVER_IP, SERVER_PORT);
+		}
+
+		previousMeasureTime = currentMillis;
 	}
+
 }
 
-void counterSetup()
+
+void measureQueueTimerSetup()
+{
+	esp_timer_create_args_t tcpIn_timer_conf = {
+		.callback = &measureQueueCallback,
+	};
+	esp_timer_handle_t tcpIn_timer;
+	esp_timer_create(&tcpIn_timer_conf, &tcpIn_timer);
+	esp_timer_start_periodic(tcpIn_timer, TCP_RECEIPT_PERIOD * 1000);
+}
+
+
+void grabMeasureSetup()
 {
 	// Digital input configuration
 	gpio_pad_select_gpio(FLOW_PIN);
 	gpio_set_direction(FLOW_PIN, GPIO_MODE_INPUT);
 
-	// Configuration of harware counter
+	// Configuration of hardware counter
 	esp_timer_init();
 	esp_timer_create_args_t timer_conf = {
-		.callback = &timerCallback,
+		.callback = &grabMeasureCallback,
 	};
 
 	esp_timer_handle_t measureTimer;
 	esp_timer_create(&timer_conf, &measureTimer);
-	esp_timer_start_periodic(measureTimer, FLOW_TIMER_PERIOD * 1e6);
+	esp_timer_start_periodic(measureTimer, MEASURE_PERIOD * 1e6);
 	attachInterrupt(digitalPinToInterrupt(FLOW_PIN), counterCallback, RISING);
-}
-
-
-void timerCallback(void *arg)
-{
-	flow = transitionCount;
-	transitionCount = 0;
-	grabMeasure();	
 }
 
 
@@ -199,52 +218,59 @@ void IRAM_ATTR counterCallback()
 	transitionCount++;
 };
 
-void grabMeasure()
+
+void grabMeasureCallback(void *arg)
 {
 	// Creation of the measure and store it in
 	Measure measure;
 	measure.timestamp = getTime();
-	measure.temperature = analogRead(TEMPERATURE_PIN);
+	if (measure.timestamp == 0) {
+		return;
+	}
+	measure.temperature = analogRead(TEMPERATURE_PIN) * TENSION_SCALE;
 	measure.flow = flow;
 
-	fifoOutMutex.lock();
-	if (fifoOut.size() >= MAX_FIFO_SIZE)
-	{
-		Serial.println("Remove measure from FIFO: " + getMeasureStr(fifoOut.back()));
-		fifoOut.pop_back();
+
+	// If the free memory is lower than MIN_FREE_MEMORY, queue is considered as full, then remove the first measure (the oldest)
+
+	uint32_t freeMemorySize = ESP.getFreeHeap();
+	log("grabMeasureCallback", "FreeMemorySize: " + String(freeMemorySize));
+
+	measuresListMutex.lock();
+	if (freeMemorySize < (MIN_FREE_MEMORY * 1024)) {
+		log("grabMeasureCallback", "Remove measure from FIFO: " + getMeasureStr(measuresQueue.back()));
+		measuresQueue.pop_front();
 	}
-	fifoOut.emplace_front(measure);
-	Serial.println("Add measure to FIFO: " + getMeasureStr(measure));
-	Serial.println("FIFO size = " + String(fifoOut.size()));
-	fifoOutMutex.unlock();
+	// Add the new measure at the end of the queue
+	measuresQueue.emplace_back(measure);
+
+	log("grabMeasureCallback", "Add measure to FIFO: " + getMeasureStr(measure));
+	log("grabMeasureCallback", "FIFO size = " + String(measuresQueue.size()) + "measures / " + String(getListMemorySize()) + "Bytes");
+	log("grabMeasureCallback", "Free memory size = " + String(int(ESP.getFreeHeap() / 1024)) + "kB");
+
+	measuresListMutex.unlock();
 }
+
 
 bool sendMeasure(Measure *measure)
 {
-	// If the client is not yet connected and the connexion try fail
-	if (!tcpClient.connected() && !tcpConnect())
-	{
+	// Check connection
+	if (WiFi.status() != WL_CONNECTED || !tcpClient.connected()) {
 		return false;
 	}
 
 	// Serialize data structure
 	uint8_t buffer[sizeof(Measure)];
 	memcpy(buffer, measure, sizeof(Measure));
-
 	tcpClient.write(buffer, sizeof(Measure));
+	log("sendMeasure", "New Measure added to queue: " + getMeasureStr(*measure));
 
 	return true;
 }
 
-String getMeasureStr(const Measure &measure)
-{
-	return (String(measure.timestamp) + " -> " + String(measure.temperature) + " / " + String(measure.flow));
-}
 
 void ntpSetup()
 {
-	unsigned int ntpUpdatePeriod = NTP_UPDATE_PERIOD * 1000; // From seconds to milliseconds
-
 	if (NTP_LOCAL_TIMESTAMP == 0)
 	{
 		configTime(0, 0, NTP_SERVER);
@@ -253,33 +279,22 @@ void ntpSetup()
 	{
 		configTzTime(NTP_UPDATE_TIMEZONE, NTP_SERVER);
 	}
-	printLocalTime();
 
 	esp_timer_create_args_t ntp_timer_conf = {
 		.callback = &ntpTimerCallback,
 	};
 	esp_timer_handle_t ntp_timer;
 	esp_timer_create(&ntp_timer_conf, &ntp_timer);
-	esp_timer_start_periodic(ntp_timer, NTP_UPDATE_PERIOD * 1000 * 1000); // NTP_UPDATE_PERIOD est en secondes
+	esp_timer_start_periodic(ntp_timer, NTP_UPDATE_PERIOD * 3600 * 1e6);  // From hours to seconds to milliseconds
 }
+
 
 void ntpTimerCallback(void *arg)
 {
-	// Mettez à jour le serveur NTP ici
 	configTzTime(NTP_UPDATE_TIMEZONE, NTP_SERVER);
-	printLocalTime();
+	log("ntpTimerCallback", "NTP update");
 }
 
-void printLocalTime()
-{
-	struct tm timeinfo;
-	if (!getLocalTime(&timeinfo))
-	{
-		Serial.println("Failed to obtain time");
-		return;
-	}
-	Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-}
 
 unsigned long getTime()
 {
@@ -287,9 +302,61 @@ unsigned long getTime()
 	struct tm timeinfo;
 	if (!getLocalTime(&timeinfo))
 	{
-		Serial.println("Failed to obtain time");
+		log("getTime" ,"Failed to obtain time");
 		return (0);
 	}
 	time(&now);
 	return now;
 }
+
+#ifdef DEBUG
+String getLocalTimeStr()
+{
+	struct tm timeinfo;
+	if (!getLocalTime(&timeinfo))
+	{
+		//log("printLocalTime" ,"Failed to obtain time");
+		return "0";
+	}
+
+	char formattedTime[16];
+	strftime(formattedTime, sizeof(formattedTime), "%H:%M:%S", &timeinfo);
+	return String(formattedTime);
+}
+
+
+String getMeasureStr(const Measure &measure)
+{
+	return (String(measure.timestamp) + " -> " + String(measure.temperature) + " / " + String(measure.flow));
+}
+
+
+void log(String function, String message)
+{
+	String logMsg = getLocalTimeStr() + " - " + function + " - " + message;
+
+	logMutex.lock();
+	logList.emplace_front(logMsg);
+	logMutex.unlock();
+}
+
+
+size_t getListMemorySize()
+{
+	size_t totalSize = 0;
+
+	for (std::list<Measure>::iterator it = measuresQueue.begin(); it != measuresQueue.end(); ++it) {
+        Measure* ptr = &(*it);
+		totalSize += sizeof(*ptr);
+    }
+
+	return totalSize;
+}
+
+
+#else
+void log(String function, String message) {return;}
+String getMeasureStr(const Measure &measure) {return ("");}
+size_t getListMemorySize() {return 0;}
+
+#endif
