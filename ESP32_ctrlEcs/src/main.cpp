@@ -20,7 +20,6 @@ struct Measure
 WiFiClient tcpClient;
 volatile unsigned short int transitionCount(0);
 
-unsigned short int flow;
 std::list<Measure> measuresQueue;
 std::mutex measuresListMutex;
 unsigned long int lastSentTimestamp(0);
@@ -41,7 +40,7 @@ void ntpSetup();
 void ntpTimerCallback(void *arg);
 void measureQueueCallback(void *arg);
 void grabMeasureCallback(void *arg);
-void IRAM_ATTR counterCallback();
+void counterCallback();
 
 // Misc Functions prototypes
 bool sendMeasure(Measure *measure);
@@ -110,6 +109,7 @@ void setup()
 {
 //#ifdef DEBUG
 	Serial.begin(BAUD_RATE);
+	Serial.println("setup - Start");
 //#endif
 
 	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -213,8 +213,9 @@ void grabMeasureSetup()
 }
 
 
-void IRAM_ATTR counterCallback()
+void counterCallback()
 {
+	log("counterCallback", "triggered");
 	transitionCount++;
 };
 
@@ -228,7 +229,8 @@ void grabMeasureCallback(void *arg)
 		return;
 	}
 	measure.temperature = analogRead(TEMPERATURE_PIN) * TENSION_SCALE;
-	measure.flow = flow;
+	measure.flow = transitionCount;
+	transitionCount = 0;
 
 
 	// If the free memory is lower than MIN_FREE_MEMORY, queue is considered as full, then remove the first measure (the oldest)
