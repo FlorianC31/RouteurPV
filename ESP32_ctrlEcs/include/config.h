@@ -3,7 +3,7 @@
 #define CONFIG
 
 
-#define DEBUG
+//#define DEBUG
 
 #define BAUD_RATE           115200
 
@@ -18,10 +18,9 @@
 #define SERVER_PORT         1150
 IPAddress SERVER_IP(192, 168, 1, 21);
 
-#define FLOW_PIN            GPIO_NUM_0
+#define FLOW_PIN            GPIO_NUM_21
 
 #define TEMPERATURE_PIN     GPIO_NUM_32
-#define TENSION_SCALE       10e4                // multiplicator to store the tension value in an unsigned short int (from 0 to 33000)
 
 #define NETWORK_PERIOD      100                 // milliseconds
 #define MEASURE_PERIOD      5                   // seconds

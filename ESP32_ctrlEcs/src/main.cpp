@@ -22,6 +22,7 @@ volatile unsigned short int transitionCount(0);
 
 std::list<Measure> measuresQueue;
 std::mutex measuresListMutex;
+std::mutex flowMutex;
 unsigned long int lastSentTimestamp(0);
 unsigned long int wifiConnectTimestamp(0);
 unsigned long previousMeasureTime (0);
@@ -213,10 +214,11 @@ void grabMeasureSetup()
 }
 
 
-void counterCallback()
+void IRAM_ATTR counterCallback()
 {
-	log("counterCallback", "triggered");
+	flowMutex.lock();
 	transitionCount++;
+	flowMutex.unlock();
 };
 
 
@@ -228,10 +230,11 @@ void grabMeasureCallback(void *arg)
 	if (measure.timestamp == 0) {
 		return;
 	}
-	measure.temperature = analogRead(TEMPERATURE_PIN) * TENSION_SCALE;
+	measure.temperature = analogRead(TEMPERATURE_PIN);
+	flowMutex.lock();
 	measure.flow = transitionCount;
 	transitionCount = 0;
-
+	flowMutex.unlock();
 
 	// If the free memory is lower than MIN_FREE_MEMORY, queue is considered as full, then remove the first measure (the oldest)
 
