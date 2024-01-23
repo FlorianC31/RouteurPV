@@ -236,6 +236,11 @@ void grabMeasureCallback(void *arg)
 	transitionCount = 0;
 	flowMutex.unlock();
 
+	// If there is no water flow, the measure is not considered and not added to the queue
+	if (measure.flow <= FLOW_TOL) {
+		return;
+	}
+
 	// If the free memory is lower than MIN_FREE_MEMORY, queue is considered as full, then remove the first measure (the oldest)
 
 	uint32_t freeMemorySize = ESP.getFreeHeap();
