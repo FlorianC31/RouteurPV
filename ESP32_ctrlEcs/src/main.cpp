@@ -6,11 +6,12 @@
 #include <list>
 #include <mutex>
 #include <ESP.h>
+#include <atomic>
 
 #include "config.h"
 
 struct Measure
-{
+{	
 	unsigned long int timestamp;
 	unsigned short int temperature;
 	unsigned short int flow;
@@ -27,9 +28,11 @@ unsigned long int lastSentTimestamp(0);
 unsigned long int wifiConnectTimestamp(0);
 unsigned long previousMeasureTime (0);
 
-
+#ifdef DEBUG
+bool firstLoop = true;
 std::mutex logMutex;
 std::list<String> logList;
+#endif
 
 
 // Setup Functions prototypes
@@ -46,12 +49,15 @@ void counterCallback();
 // Misc Functions prototypes
 bool sendMeasure(Measure *measure);
 unsigned long getTime();
-void log(String function, String message);
 
+#ifdef DEBUG
 // Debug Functions prototypes
+void log(String function, String message);
+void displayLog();
 String getLocalTimeStr();
 String getMeasureStr(const Measure &measure);
 size_t getListMemorySize();
+#endif
 
 
 void measureQueueCallback(void *arg)
@@ -65,11 +71,14 @@ void measureQueueCallback(void *arg)
 	if (tcpClient.available()) {
 		uint32_t receivedTimestamp;
 		tcpClient.readBytes((char *)&receivedTimestamp, sizeof(receivedTimestamp));
+#ifdef DEBUG
 		log("measureQueueCallback", "Response received: " + String(receivedTimestamp));
+#endif
 
 		if (lastSentTimestamp == receivedTimestamp){
-
-		log("measureQueueCallback", "Remove measure of the queue:" + String(receivedTimestamp));
+#ifdef DEBUG
+			log("measureQueueCallback", "Remove measure of the queue:" + String(receivedTimestamp));
+#endif
 			measuresListMutex.lock();
 			measuresQueue.pop_front();
 			measuresListMutex.unlock();
@@ -88,16 +97,22 @@ void measureQueueCallback(void *arg)
 
 			if(sendMeasure(&firstMeasure)){
 				lastSentTimestamp = firstMeasure.timestamp;
+#ifdef DEBUG
 				log("measureQueueCallback", "Send succesfully: " + String(lastSentTimestamp));
+#endif
 			}
 			else{
+#ifdef DEBUG
 				log("measureQueueCallback", "Fail send: " + String(lastSentTimestamp));
+#endif
 			}
 
 		}
 		// If the response is not receipted before "RESPONSE_TIMEOUT", stop waiting to try a new send on the next step of the timer
 		else if (getTime() - lastSentTimestamp >= RESPONSE_TIMEOUT) {
+#ifdef DEBUG
 			log("measureQueueCallback", "Send timeout: " + String(lastSentTimestamp));
+#endif
 			lastSentTimestamp = 0;
 		}
 		// Else, wait for response or RESPONSE_TIMEOUT
@@ -108,10 +123,9 @@ void measureQueueCallback(void *arg)
 // Functions definition
 void setup()
 {
-//#ifdef DEBUG
+#ifdef DEBUG
 	Serial.begin(BAUD_RATE);
-	Serial.println("setup - Start");
-//#endif
+#endif
 
 	WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 	Serial.println("setup - WiFi.begin() OK");
@@ -133,12 +147,11 @@ void setup()
 void loop()
 {
 #ifdef DEBUG
-	logMutex.lock();
-	while(!logList.empty()){	
-		Serial.println(logList.back());
-		logList.pop_back();
+	if (firstLoop) {
+		firstLoop = false;
+		log("loop", "Start of the loop");
 	}
-	logMutex.unlock();
+	displayLog();
 #endif
 
 	unsigned long currentMillis = millis();
@@ -151,20 +164,26 @@ void loop()
 
 		// If wifi is disconnected
 		if (WiFi.status() != WL_CONNECTED) {
+#ifdef DEBUG
 			log("loop", "Wifi waiting for connection");
+#endif
 
 			// and if last connection try duration is superior to WIFI_TIMEOUT, try to reconnect
 			unsigned long currentTime = getTime();
 			if ((currentTime == 0) || (currentTime - wifiConnectTimestamp >= WIFI_TIMEOUT)) {
+#ifdef DEBUG
 				log("loop", "Connection to WiFi");
 				log("loop", "currentTime = " + String(currentTime));
+#endif			
 				WiFi.disconnect();
 				WiFi.reconnect();
 				wifiConnectTimestamp = getTime();
 
 				if (currentTime == 0) {
 					while((WiFi.status() != WL_CONNECTED)) {
+#ifdef DEBUG
 						log("loop", "Wifi waiting for connection");
+#endif
 						delay(1000);
 					}
 				}
@@ -174,14 +193,37 @@ void loop()
 
 		// If tcp is disconnected, connect it
 		if (!tcpClient.connected()) {
+#ifdef DEBUG
 			log("loop", "Connection to TCP server");
-			tcpClient.connect(SERVER_IP, SERVER_PORT);
+#endif
+			int tcpStatus = tcpClient.connect(SERVER_IP, SERVER_PORT);
+#ifdef DEBUG
+			if (tcpStatus == 1) {
+				log("loop", "TCP Server connection : Success");
+			}
+			else {
+				log("loop", "TCP Server connection : Fail");
+			}
+#endif
 		}
 
 		previousMeasureTime = currentMillis;
 	}
 
 }
+
+
+#ifdef DEBUG
+void displayLog()
+{
+	logMutex.lock();
+	while(!logList.empty()){	
+		Serial.println(logList.back());
+		logList.pop_back();
+	}
+	logMutex.unlock();
+}
+#endif
 
 
 void measureQueueTimerSetup()
@@ -236,27 +278,29 @@ void grabMeasureCallback(void *arg)
 	transitionCount = 0;
 	flowMutex.unlock();
 
-	// If there is no water flow, the measure is not considered and not added to the queue
-	if (measure.flow <= FLOW_TOL) {
-		return;
-	}
-
 	// If the free memory is lower than MIN_FREE_MEMORY, queue is considered as full, then remove the first measure (the oldest)
 
 	uint32_t freeMemorySize = ESP.getFreeHeap();
+#ifdef DEBUG
+	log("########################################", "########################################");
 	log("grabMeasureCallback", "FreeMemorySize: " + String(freeMemorySize));
+#endif
 
 	measuresListMutex.lock();
 	if (freeMemorySize < (MIN_FREE_MEMORY * 1024)) {
+#ifdef DEBUG
 		log("grabMeasureCallback", "Remove measure from FIFO: " + getMeasureStr(measuresQueue.back()));
+#endif
 		measuresQueue.pop_front();
 	}
 	// Add the new measure at the end of the queue
 	measuresQueue.emplace_back(measure);
 
+#ifdef DEBUG
 	log("grabMeasureCallback", "Add measure to FIFO: " + getMeasureStr(measure));
 	log("grabMeasureCallback", "FIFO size = " + String(measuresQueue.size()) + "measures / " + String(getListMemorySize()) + "Bytes");
 	log("grabMeasureCallback", "Free memory size = " + String(int(ESP.getFreeHeap() / 1024)) + "kB");
+#endif
 
 	measuresListMutex.unlock();
 }
@@ -273,7 +317,10 @@ bool sendMeasure(Measure *measure)
 	uint8_t buffer[sizeof(Measure)];
 	memcpy(buffer, measure, sizeof(Measure));
 	tcpClient.write(buffer, sizeof(Measure));
+
+#ifdef DEBUG
 	log("sendMeasure", "New Measure added to queue: " + getMeasureStr(*measure));
+#endif
 
 	return true;
 }
@@ -302,7 +349,10 @@ void ntpSetup()
 void ntpTimerCallback(void *arg)
 {
 	configTzTime(NTP_UPDATE_TIMEZONE, NTP_SERVER);
+	
+#ifdef DEBUG
 	log("ntpTimerCallback", "NTP update");
+#endif
 }
 
 
@@ -312,7 +362,9 @@ unsigned long getTime()
 	struct tm timeinfo;
 	if (!getLocalTime(&timeinfo))
 	{
+#ifdef DEBUG
 		log("getTime" ,"Failed to obtain time");
+#endif
 		return (0);
 	}
 	time(&now);
@@ -362,11 +414,5 @@ size_t getListMemorySize()
 
 	return totalSize;
 }
-
-
-#else
-void log(String function, String message) {return;}
-String getMeasureStr(const Measure &measure) {return ("");}
-size_t getListMemorySize() {return 0;}
 
 #endif

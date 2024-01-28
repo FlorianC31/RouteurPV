@@ -3,7 +3,7 @@
 #define CONFIG
 
 
-#define DEBUG
+//#define DEBUG
 
 #define BAUD_RATE           115200
 
@@ -19,12 +19,11 @@
 IPAddress SERVER_IP(192, 168, 1, 21);
 
 #define FLOW_PIN            GPIO_NUM_21
-#define FLOW_TOL            1
 
 #define TEMPERATURE_PIN     GPIO_NUM_32
 
-#define NETWORK_PERIOD      100                 // milliseconds
-#define MEASURE_PERIOD      2                   // seconds
+#define NETWORK_PERIOD      1000                // milliseconds
+#define MEASURE_PERIOD      10                  // seconds
 #define TCP_RECEIPT_PERIOD  100                 // milliseconds
 
 #define RESPONSE_TIMEOUT    6                   // seconds
